@@ -1,0 +1,1261 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+setwd("~/Google Drive/Documents/IBQ_Autism")
+```
+
+
+```{r}
+##### Read Original Files
+ibq.org <- read.csv ("ibq_r.csv", header=T, sep=",", na.strings="")
+mullen.org <- read.csv ("mullen.csv", header=T, sep=",", na.strings="")
+vineland.org <- read.csv ("vineland_subject.csv", header=T, sep=",", na.strings="")
+asd.demo <- read.csv ("asd_demo.csv", header=T, sep=",", na.strings="NA")
+```
+
+```{r}
+##### Filter out Current_stage == Recycling Bin
+ibq.org <- ibq.org[ibq.org$Current_stage != "Recycling Bin",]
+mullen.org <- mullen.org[mullen.org$Current_stage != "Recycling Bin",]
+vineland.org <- vineland.org[vineland.org$Current_stage != "Recycling Bin",]
+
+```
+
+```{r}
+##### Select variables
+library(dplyr)
+ibq <- select (ibq.org, CandID, Visit_label, Candidate_Age, activity_level:vocal_reactivity)
+mullen <- select (mullen.org, CandID, Visit_label, Candidate_Age, 
+                  composite_standard_score,
+                  receptive_language_age_equivalent, 
+                  expressive_language_age_equivalent,
+                  visual_reception_age_equivalent,
+                  fine_motor_age_equivalent)
+vineland <- select (vineland.org, CandID, Visit_label, COM_STD_SCORE, SOC_STD_SCORE, MS_STD_SCORE, ABC_STD_SCORE)
+
+```
+
+```{r}
+##### Rename variables, compute vdq and nvdq from Mullen, and select variables
+names(ibq) <- c("CandID","Visit_label","Candidate_Age","activity","distress","fear","orient","smile","highp",
+                "lowp","sooth","falling","cuddle","percept","sadness","approach","vocal")
+mullen$vdq<- ((mullen$receptive_language_age_equivalent + mullen$expressive_language_age_equivalent)/(2*mullen$Candidate_Age))*100
+mullen$nvdq <- ((mullen$visual_reception_age_equivalent + mullen$fine_motor_age_equivalent)/(2*mullen$Candidate_Age))*100
+names(mullen)[4] <- "ELC"
+mullen <- select (mullen, CandID, Visit_label, Candidate_Age, ELC, vdq, nvdq)
+
+```
+
+```{r}
+##### Select time points and unique cases
+ibq.long <- ibq[ibq$Visit_label=="V06"|ibq$Visit_label=="V12",]
+mullen.long <- mullen[mullen$Visit_label=="V06"|mullen$Visit_label=="V12"|mullen$Visit_label=="V24",]
+vineland <- vineland[vineland$Visit_label=="V24",]
+```
+
+```{r}
+##### Recode and create variables in vineland and DSM4
+vineland[vineland== "-99"] <- NA
+```
+
+```{r}
+##### reshape ibq and mullen to wide form
+ibq <- reshape (ibq.long, timevar="Visit_label",
+                idvar="CandID",
+                direction="wide")
+mullen <- reshape (mullen.long, timevar="Visit_label",
+                   idvar="CandID",
+                   direction="wide")
+names(ibq) <- gsub("V06","6m", names(ibq))
+names(ibq) <- gsub("V12","12m", names(ibq))
+names(mullen) <- gsub("V06","6m",names(mullen))
+names(mullen) <- gsub("V12","12m",names(mullen))
+names(mullen) <- gsub("V24","24m",names(mullen))
+```
+
+```{r}
+##### merge ibq, mullen, and vineland AND exclude participants either not having any IBQ or 24 months outcomes
+vinemullen <- merge (mullen, vineland, by="CandID", all=T)
+vinemullen <- select (vinemullen, -Visit_label,-Candidate_Age.6m, - Candidate_Age.12m)
+nmiss <- function (x) {sum(is.na(x))}
+asd.total <- merge(ibq, vinemullen, by="CandID", all=T)
+
+asd.total$ibqnmiss <- apply(asd.total[,2:31],1,FUN="nmiss")
+asd.total$nmiss24m <- apply(asd.total[,40:44],1,FUN="nmiss")
+asd <- asd.total[asd.total$ibqnmiss !=30 & asd.total$nmiss24m !=5,]
+asd <- select (asd, -ibqnmiss, -nmiss24m)
+```
+
+```{r}
+##### exclude participants not having any IBQ from ibq file
+nmiss <- function (x){sum(is.na(x))}
+ibq$nmiss <- apply(ibq[,2:31],1,FUN="nmiss")
+ibq <- ibq[ibq$nmiss != 30,]
+```
+
+
+```{r}
+##### Add demogrpahics
+ibq <- merge (ibq, asd.demo, by="CandID", all.x=T)
+asd <- merge (asd, asd.demo, by="CandID", all.x=T)
+
+ibq <- ibq[!is.na(ibq$risk.status),]
+asd <- asd[!is.na(asd$risk.status),]
+
+write.csv (ibq, "~/Google Drive/Documents/IBQ_Autism/master/ibq.csv", na="",row.names=F)
+write.csv (asd, "~/Google Drive/Documents/IBQ_Autism/master/asd.csv", na="",row.names=F)
+```
+
+
+```{r}
+###### To compare participants in Part 1 not contributing Part 2
+ibq.exclude <- merge(ibq,vinemullen, by="CandID", all.x=T)
+ibq.exclude$nmiss24m <- apply(ibq.exclude[,49:54],1,FUN="nmiss")
+ibq.exclude$exclude <- ifelse(ibq.exclude$nmiss24m==6,"E","I")
+```
+
+```{r}
+##### Rescale variables 0-1
+rescale <- function (x){
+  require(MASS)
+  require(car)
+  x<-as.data.frame(x)
+  x.nid <- x[,2:ncol(x)]
+  min <- apply(x.nid,2,min,na.rm=TRUE)
+  max <- apply(x.nid,2,max,na.rm=TRUE)
+  x.nid <- sweep(x.nid,2,min,FUN="-")
+  x.nid <- sweep(x.nid,2,max-min,FUN="/")
+  col.names <- names(x[2:ncol(x)])
+  names(x.nid) <- col.names
+  x.nid <- cbind (x[,1],x.nid)
+  names(x.nid)[1] <- "CandID"
+  return(x.nid)
+  }
+asd.rescaled <- rescale(asd[,c(1,3:16,18:37,39:45)])
+asd.master <- merge(asd[,c(1:2,17,38,46:54)], asd.rescaled, by="CandID", all=T)
+asd.master <- unique(asd.master)
+asd.reduced <- asd.master[!is.na(asd.master$dgn)&asd.master$dgn !="LR+",]
+
+write.csv (asd.master, "~/Google Drive/Documents/IBQ_Autism/master/asd_rescaled.csv", na="",row.names=F)
+```
+
+
+```{r}
+##### sample characteristics Part 1
+with(ibq, table(Gender))
+with(ibq, table(risk.status))
+with(ibq, table(Gender,risk.status))
+with(ibq[!is.na(ibq$activity.6m),], table(Gender))
+with(ibq[!is.na(ibq$activity.6m),], table(risk.status))
+with(ibq[!is.na(ibq$activity.6m),], table(Gender,risk.status))
+with(ibq[!is.na(ibq$activity.12m),], table(Gender))
+with(ibq[!is.na(ibq$activity.12m),], table(risk.status))
+with(ibq[!is.na(ibq$activity.12m),], table(Gender,risk.status))
+
+ibq$race1 <- as.character(ibq$race)
+ibq$race1 [grepl("@",ibq$race1)] <- "more_than_one_race"
+ibq$race1 [is.na(ibq$race)]<- "unknown_not_reported"
+ibq$ethnicity [is.na(ibq$ethnicity)] <- "not_answered"
+ibq$mother_edu [is.na(ibq$mother_edu)] <- "not_answered"
+ibq$income [is.na(ibq$income)] <- "not_answered"
+ibq.droplevel <- droplevels(ibq)
+
+with(ibq, table(race1,risk.status))
+with(ibq, table(ethnicity,risk.status))
+with(ibq.droplevel, table(mother_edu,risk.status))
+with(ibq, table(income,risk.status))
+
+chisq.test (with(ibq, table(Gender,risk.status)))
+chisq.test (with(ibq[!is.na(ibq$activity.6m),], table(Gender,risk.status)))
+chisq.test (with(ibq[!is.na(ibq$activity.12m),], table(Gender,risk.status)))
+
+chisq.test (with(ibq, table(race1,risk.status)))
+chisq.test (with(ibq, table(ethnicity,risk.status)))
+chisq.test (with(ibq.droplevel, table(mother_edu,risk.status)))
+chisq.test (with(ibq, table(income,risk.status)))
+
+
+require(psych)
+ibq.exclude$mother_age <- as.numeric(as.character(ibq.exclude$mother_age))
+describeBy(ibq.exclude[,c(2,17,39,42,45)], ibq.exclude$risk.status, mat=T, digits=2)
+
+summary(aov(Candidate_Age.6m ~ risk.status, data=ibq.exclude))
+summary(aov(Candidate_Age.12m ~ risk.status, data=ibq.exclude))
+summary(aov(ELC.6m ~ risk.status, data=ibq.exclude))
+summary(aov(ELC.12m ~ risk.status, data=ibq.exclude))
+summary(aov(mother_age ~ risk.status, data=ibq.exclude))
+```
+
+
+```{r}
+##### Sample Characteristics Part 2
+asd.reduced <- droplevels(asd.reduced)
+asd.reduced.org <- asd[!is.na(asd$dgn)&asd$dgn !="LR+",]
+asd.reduced.org <- droplevels(asd.reduced.org)
+with(asd.reduced, table(Gender))
+with(asd.reduced, table(dgn))
+with(asd.reduced, table(Gender,dgn))
+with(asd.reduced[!is.na(asd.reduced$activity.6m),], table(Gender))
+with(asd.reduced[!is.na(asd.reduced$activity.6m),], table(dgn))
+with(asd.reduced[!is.na(asd.reduced$activity.6m),], table(Gender,dgn))
+with(asd.reduced[!is.na(asd.reduced$activity.12m),], table(Gender))
+with(asd.reduced[!is.na(asd.reduced$activity.12m),], table(dgn))
+with(asd.reduced[!is.na(asd.reduced$activity.12m),], table(Gender,dgn))
+
+
+asd.reduced$race1 <- as.character(asd.reduced$race)
+asd.reduced$race1 [grepl("@",asd.reduced$race1)] <- "more_than_one_race"
+asd.reduced$race1 [is.na(asd.reduced$race)]<- "unknown_not_reported"
+asd.reduced$ethnicity [is.na(asd.reduced$ethnicity)] <- "not_answered"
+asd.reduced$mother_edu [is.na(asd.reduced$mother_edu)] <- "not_answered"
+asd.reduced$income [is.na(asd.reduced$income)] <- "not_answered"
+
+
+with(asd.reduced, table(race1,dgn))
+with(asd.reduced, table(ethnicity,dgn))
+with(asd.reduced.droplevel, table(mother_edu,dgn))
+with(asd.reduced, table(income,dgn))
+
+chisq.test (with(asd.reduced, table(Gender,dgn)))
+chisq.test (with(asd.reduced[!is.na(asd.reduced$activity.6m),], table(Gender,dgn)))
+chisq.test (with(asd.reduced[!is.na(asd.reduced$activity.12m),], table(Gender,dgn)))
+
+chisq.test (with(asd.reduced, table(race1,dgn)))
+chisq.test (with(asd.reduced, table(ethnicity,dgn)))
+chisq.test (with(asd.reduced, table(mother_edu,dgn)))
+chisq.test (with(asd.reduced, table(income,dgn)))
+
+
+require(psych)
+
+asd.reduced.org$mother_age <- as.numeric(as.character(asd.reduced.org$mother_age))
+describeBy(asd.reduced.org[,c(2,17,32,35,38:44,51)], asd.reduced.org$dgn, mat=T, digits=2)
+
+summary(aov(Candidate_Age.6m ~ dgn, data=asd.reduced))
+summary(aov(Candidate_Age.12m ~ dgn, data=asd.reduced))
+summary(aov(Candidate_Age.24m ~ dgn, data=asd.reduced))
+summary(aov(ELC.6m ~ dgn, data=asd.reduced))
+summary(aov(ELC.12m ~ dgn, data=asd.reduced))
+summary(aov(ELC.24m ~ dgn, data=asd.reduced))
+summary(aov(vdq.24m ~ dgn, data=asd.reduced))
+summary(aov(nvdq.24m ~ dgn, data=asd.reduced))
+summary(aov(COM_STD_SCORE ~ dgn, data=asd.reduced))
+summary(aov(SOC_STD_SCORE ~ dgn, data=asd.reduced))
+summary(aov(MS_STD_SCORE ~ dgn, data=asd.reduced))
+summary(aov(mother_age ~ dgn, data=asd.reduced))
+
+
+```
+
+
+```{r}
+##### Participants in Part 1 not contributing Part 3
+ibq.exclude <- droplevels(ibq.exclude)
+
+with (ibq.exclude, table(risk.status,exclude))
+with (ibq.exclude, table(Gender,exclude))
+with (ibq.exclude[!is.na(ibq.exclude$activity.6m),], table(risk.status,exclude))
+with (ibq.exclude[!is.na(ibq.exclude$activity.6m),], table(Gender,exclude))
+with (ibq.exclude[!is.na(ibq.exclude$activity.12m),], table(risk.status,exclude))
+with (ibq.exclude[!is.na(ibq.exclude$activity.12m),], table(Gender,exclude))
+
+ibq.exclude$race1 <- as.character(ibq.exclude$race)
+ibq.exclude$race1 [grepl("@",ibq.exclude$race1)] <- "more_than_one_race"
+ibq.exclude$race1 [is.na(ibq.exclude$race)]<- "unknown_not_reported"
+ibq.exclude$ethnicity [is.na(ibq.exclude$ethnicity)] <- "not_answered"
+ibq.exclude$mother_edu [is.na(ibq.exclude$mother_edu)] <- "not_answered"
+ibq.exclude$income [is.na(ibq.exclude$income)] <- "not_answered"
+
+
+with(ibq.exclude, table(race1,exclude))
+with(ibq.exclude, table(ethnicity,exclude))
+with(ibq.exclude, table(mother_edu,exclude))
+with(ibq.exclude, table(income,exclude))
+
+
+chisq.test (with(ibq.exclude, table(risk.status,exclude)))
+chisq.test (with(ibq.exclude[!is.na(ibq.exclude$activity.6m),], table(risk.status,exclude)))
+chisq.test (with(ibq.exclude[!is.na(ibq.exclude$activity.12m),], table(risk.status,exclude)))
+chisq.test (with(ibq.exclude, table(Gender,exclude)))
+chisq.test (with(ibq.exclude[!is.na(ibq.exclude$activity.6m),], table(Gender,exclude)))
+chisq.test (with(ibq.exclude[!is.na(ibq.exclude$activity.12m),], table(Gender,exclude)))
+
+chisq.test (with(ibq.exclude, table(race1,exclude)))
+chisq.test (with(ibq.exclude, table(ethnicity,exclude)))
+chisq.test (with(ibq.exclude, table(mother_edu,exclude)))
+chisq.test (with(ibq.exclude, table(income,exclude)))
+
+
+summary(manova (as.matrix(ibq.exclude[,3:16]) ~ exclude, data=ibq.exclude))
+summary(manova (as.matrix(ibq.exclude[,18:31]) ~ exclude, data=ibq.exclude))
+summary(aov(Candidate_Age.6m ~ exclude, data=ibq.exclude))
+summary(aov(Candidate_Age.12m ~ exclude, data=ibq.exclude))
+summary(aov(ELC.6m ~ exclude, data=ibq.exclude))
+summary(aov(ELC.12m ~ exclude, data=ibq.exclude))
+summary(aov(mother_age ~ exclude, data=ibq.exclude))
+
+
+describeBy(ibq.exclude[,c(2,17,39,42,45)], ibq.exclude$exclude, mat=T, digits=2)
+```
+
+
+```{r}
+##### IBQ scales HR vs. LR group comparisons, extract p-values
+library(psych)
+library(heplots)
+
+manova.all <- manova(as.matrix(asd.master[,c(14:42,45,49:54)]) ~ risk.status, data= asd.master)
+summary(manova.all, tol=0)
+summary.aov(manova.all)
+aov.all <- as.list(summary.aov(manova.all))
+```
+
+```{r}
+p.all <- as.data.frame(sapply(aov.all,"[[","Pr(>F)"))
+p.all <- p.all[-2,]
+p.adj.scales <- as.data.frame(p.adjust(p.all, method="BH", n=length(p.all)))
+p.adj.scales <- round(p.adj.scales,3)
+F.values <- as.data.frame(sapply(aov.all,"[[","F value"))
+F.values <- F.values[-2,]
+df <- as.data.frame(sapply(aov.all,"[[","Df"))
+F.df <- rbind(F.values, df)
+ci.eta <- function (x) {
+  require(apaTables)
+  x <- as.data.frame(x)
+  ci.eta <- data.frame(matrix(ncol=2, nrow=ncol(x)))
+  for (i in 1:ncol(x)) {
+    ci <- get.ci.partial.eta.squared (F.value=x[1,i], df1=x[2,i], df2=x[3,i],conf.level=.90)
+    ci.eta[i,] <- as.numeric(ci)
+  }
+  return(round(ci.eta,2))
+}
+ci.eta <- ci.eta(F.df)
+
+```
+
+```{r}
+descriptive <- describeBy(asd[,c(3:16,18:32,35,40:44)], asd$risk.status, mat=T, digits=2)
+descriptive <- descriptive[,c(2:3,5:6)]
+descriptive.w <- reshape (descriptive, idvar="vars", timevar="group1", direction="wide")
+```
+
+
+```{r}
+Table1 <- cbind(as.data.frame(t(F.df)), as.data.frame(ci.eta), as.data.frame(t(p.all)),as.data.frame(p.adj.scales))
+names(Table1) <- c("F","df1","df2","ll","ul","p","p.adj")
+Table1$eta.sqaured <- (Table1$F * Table1$df1)/((Table1$F*Table1$df1)+Table1$df2)
+Table1 <- round(Table1,3)
+Table1 <- cbind(descriptive.w,Table1)
+```
+
+
+```{r}
+##### Reliability
+ibq.items <- select (ibq.org, CandID, Visit_label, q_1:q_191)
+ibq.items[ibq.items == "does_not_apply"|ibq.items == "not_answered"] <- NA
+ibq.items.6m <- ibq.items[ibq.items$Visit_label=="V06",]
+ibq.items.12m <- ibq.items[ibq.items$Visit_label=="V12",]
+ibq.ids <- as.vector (ibq$CandID)
+ibq.items.6m <- ibq.items.6m[ibq.items.6m$CandID %in% ibq.ids,]
+ibq.items.12m <- ibq.items.12m[ibq.items.12m$CandID %in% ibq.ids,]
+ibq.items.6m$nmiss <- apply(ibq.items.6m[,3:193],1,FUN="nmiss")
+ibq.items.12m$nmiss <- apply(ibq.items.12m[,3:193],1,FUN="nmiss")
+ibq.items.6m <- ibq.items.6m[ibq.items.6m$nmiss != 191,]
+ibq.items.12m <- ibq.items.12m[ibq.items.12m$nmiss !=191,]
+ibq.items.6m[,3:193] <- sapply(ibq.items.6m[,3:193], as.numeric)
+ibq.items.12m[,3:193] <- sapply(ibq.items.12m[,3:193], as.numeric)
+library(psych)
+### 6 months
+activity.6m <- alpha(subset(ibq.items.6m,select=c(q_1,q_2,q_3,q_12,q_13,q_14,q_32,q_33,q_38,q_39,q_111,q_112,q_115,q_116,q_117)),keys=c("q_1","q_14","q_117"))
+distress.6m <- alpha(subset(ibq.items.6m,select=c(q_11,q_15:q_20,q_41,q_44,q_75,q_76,q_93,q_109,q_113,q_114,q_118)),keys=c("q_11","q_16","q_19","q_76"))
+fear.6m <- alpha(subset(ibq.items.6m,select=c(q_90,q_94,q_99,q_150:q_158,q_161:q_164)),keys=c("q_163"))
+orient.6m <- alpha(subset(ibq.items.6m,select=c(q_46:q_51,q_54,q_55,q_91,q_92,q_100,q_101)))
+smile.6m <- alpha(subset(ibq.items.6m,select=c(q_34,q_36,q_37,q_40,q_43,q_53,q_56,q_57,q_110,q_149)))
+highp.6m <- alpha(subset(ibq.items.6m,select=c(q_58,q_65:q_67,q_77:q_82,q_165)))
+lowp.6m <- alpha(subset(ibq.items.6m,select=c(q_59:q_64,q_68:q_74)))
+sooth.6m <- alpha(subset(ibq.items.6m,select=c(q_174:q_191)),keys=c("q_176","q_179","q_182","q_185","q_188","q_191"))
+falling.6m <- alpha(subset(ibq.items.6m,select=c(q_21:q_29,q_119:q_122)),keys=c("q_22","q_24","q_26","q_29","q_120","q_121"))
+cuddle.6m <- alpha(subset(ibq.items.6m,select=c(q_5:q_7,q_105:q_108,q_123:q_132)),keys=c("q_7","q_105","q_108","q_124","q_125","q_127","q_128","q_130","q_132"))
+percept.6m <- alpha(subset(ibq.items.6m,select=c(q_4,q_83,q_84,q_95,q_96,q_133:q_139)))
+sadness.6m <- alpha(subset(ibq.items.6m,select=c(q_30,q_31,q_140:q_145,q_166:q_171)))
+approach.6m <- alpha(subset(ibq.items.6m,select=c(q_85:q_89,q_97,q_98,q_104,q_159,q_160,q_172,q_173)),keys=c("q_89","q_173"))
+vocal.6m <- alpha(subset(ibq.items.6m,select=c(q_8:q_10,q_35,q_42,q_45,q_52,q_102,q_103,q_146:q_148)))
+
+### 12 months
+activity.12m <- alpha(subset(ibq.items.12m,select=c(q_1,q_2,q_3,q_12,q_13,q_14,q_32,q_33,q_38,q_39,q_111,q_112,q_115,q_116,q_117)),keys=c("q_1","q_14","q_117"))
+distress.12m <- alpha(subset(ibq.items.12m,select=c(q_11,q_15:q_20,q_41,q_44,q_75,q_76,q_93,q_109,q_113,q_114,q_118)),keys=c("q_11","q_16","q_19","q_76"))
+fear.12m <- alpha(subset(ibq.items.12m,select=c(q_90,q_94,q_99,q_150:q_158,q_161:q_164)),keys=c("q_163"))
+orient.12m <- alpha(subset(ibq.items.12m,select=c(q_46:q_51,q_54,q_55,q_91,q_92,q_100,q_101)))
+smile.12m <- alpha(subset(ibq.items.12m,select=c(q_34,q_36,q_37,q_40,q_43,q_53,q_56,q_57,q_110,q_149)))
+highp.12m <- alpha(subset(ibq.items.12m,select=c(q_58,q_65:q_67,q_77:q_82,q_165)))
+lowp.12m <- alpha(subset(ibq.items.12m,select=c(q_59:q_64,q_68:q_74)))
+sooth.12m <- alpha(subset(ibq.items.12m,select=c(q_174:q_191)),keys=c("q_176","q_179","q_182","q_185","q_188","q_191"))
+falling.12m <- alpha(subset(ibq.items.12m,select=c(q_21:q_29,q_119:q_122)),keys=c("q_22","q_24","q_26","q_29","q_120","q_121"))
+cuddle.12m <- alpha(subset(ibq.items.12m,select=c(q_5:q_7,q_105:q_108,q_123:q_132)),keys=c("q_7","q_105","q_108","q_124","q_125","q_127","q_128","q_130","q_132"))
+percept.12m <- alpha(subset(ibq.items.12m,select=c(q_4,q_83,q_84,q_95,q_96,q_133:q_139)))
+sadness.12m <- alpha(subset(ibq.items.12m,select=c(q_30,q_31,q_140:q_145,q_166:q_171)))
+approach.12m <- alpha(subset(ibq.items.12m,select=c(q_85:q_89,q_97,q_98,q_104,q_159,q_160,q_172,q_173)),keys=c("q_89","q_173"))
+vocal.12m <- alpha(subset(ibq.items.12m,select=c(q_8:q_10,q_35,q_42,q_45,q_52,q_102,q_103,q_146:q_148)))
+
+activity.6m[[1]]
+distress.6m[[1]]
+fear.6m[[1]]
+orient.6m[[1]]
+smile.6m[[1]]
+highp.6m[[1]]
+lowp.6m[[1]]
+sooth.6m[[1]]
+falling.6m[[1]]
+cuddle.6m[[1]]
+percept.6m[[1]]
+sadness.6m[[1]]
+approach.6m[[1]]
+vocal.6m[[1]]
+
+activity.12m[[1]]
+distress.12m[[1]]
+fear.12m[[1]]
+orient.12m[[1]]
+smile.12m[[1]]
+highp.12m[[1]]
+lowp.12m[[1]]
+sooth.12m[[1]]
+falling.12m[[1]]
+cuddle.12m[[1]]
+percept.12m[[1]]
+sadness.12m[[1]]
+approach.12m[[1]]
+vocal.12m[[1]]
+
+```
+
+
+```{r}
+##### function for testing group invariance
+group.invariance <- function (x,y,z) {
+  require(lavaan)
+  fit.combined <- cfa(x, data=y,estimator="MLR",missing="ML", fixed.x = FALSE)
+  fit.group <- cfa(x, data=y,estimator="MLR",missing="ML", fixed.x = FALSE,
+                   group=z)
+  fit.group.summary <- summary (fit.group,fit.measures=TRUE,standardized=TRUE)
+  fit.metric <- cfa(x, data=y,estimator="MLR",missing="ML", fixed.x = FALSE,
+                  group=z,
+                  group.equal=c("loadings"))
+  fit.scalar <- cfa(x, data=y,estimator="MLR",missing="ML", fixed.x = FALSE,
+                  group=z,
+                  group.equal=c("loadings","intercepts"))
+  fit.residual <- cfa(x, data=y,estimator="MLR",missing="ML", fixed.x = FALSE,
+                  group=z,
+                  group.equal=c("loadings","intercepts","residuals"))
+  fitmeasure.group <- fitMeasures (fit.group,c("chisq","df","pvalue","cfi","rmsea","srmr","aic","bic"))
+  fitmeasure.metric <-fitMeasures (fit.metric,c("chisq","df","pvalue","cfi","rmsea","srmr","aic","bic"))
+  fitmeasure.scalar <-fitMeasures (fit.scalar,c("chisq","df","pvalue","cfi","rmsea","srmr","aic","bic"))
+  fitmeasure.residual <-fitMeasures (fit.residual,c("chisq","df","pvalue","cfi","rmsea","srmr","aic","bic"))
+  print (fitmeasure.group)
+  print (fitmeasure.metric)
+  print (fitmeasure.scalar)
+  print (fitmeasure.residual)
+}
+
+group.invariance2 <- function (x,y,z) {
+  fit.combined <- cfa(x, data=y,estimator="MLR",missing="ML", fixed.x = FALSE)
+  fit.group <- cfa(x, data=y,estimator="MLR",missing="ML", fixed.x = FALSE,
+                   group=z)
+  fit.metric <- cfa(x, data=y,estimator="MLR",missing="ML", fixed.x = FALSE,
+                  group=z,
+                  group.equal=c("loadings"))
+  fit.scalar <- cfa(x, data=y,estimator="MLR",missing="ML", fixed.x = FALSE,
+                  group=z,
+                  group.equal=c("loadings","intercepts"))
+  fit.residual <- cfa(x, data=y,estimator="MLR",missing="ML", fixed.x = FALSE,
+                  group=z,
+                  group.equal=c("loadings","intercepts","residuals"))
+  fitmeasure.group <- as.data.frame(fitMeasures (fit.group,c("chisq","df","pvalue","cfi","rmsea","srmr","aic","bic")))
+  fitmeasure.metric <- as.data.frame(fitMeasures (fit.metric,c("chisq","df","pvalue","cfi","rmsea","srmr","aic","bic")))
+  fitmeasure.scalar <- as.data.frame(fitMeasures (fit.scalar,c("chisq","df","pvalue","cfi","rmsea","srmr","aic","bic")))
+  fitmeasure.residual <- as.data.frame(fitMeasures (fit.residual,c("chisq","df","pvalue","cfi","rmsea","srmr","aic","bic")))
+  fitmeasure <- rbind(t(fitmeasure.group),t(fitmeasure.metric),t(fitmeasure.scalar),t(fitmeasure.residual))
+  return(fitmeasure)
+  }
+```
+
+
+```{r}
+library(psych)
+library(GPArotation)
+twofactors.6m <- fa (ibq[,3:16],nfactors=2,rotate="oblimin",fm="pa")
+threefactors.6m <- fa (ibq[,3:16],nfactors=3,rotate="oblimin",fm="pa")
+fourfactors.6m <- fa (ibq[,3:16],nfactors=4,rotate="oblimin",fm="pa")
+twofactors.12m <- fa (ibq[,18:31],nfactors=2,rotate="oblimin",fm="pa")
+threefactors.12m <- fa (ibq[,18:31],nfactors=3,rotate="oblimin",fm="pa")
+fourfactors.12m <- fa (ibq[,18:31],nfactors=4,rotate="oblimin",fm="pa")
+twofactors.6m
+threefactors.6m
+fourfactors.6m
+twofactors.12m
+threefactors.12m
+fourfactors.12m
+```
+
+
+```{r}
+##### 3 Models to test group invariance
+
+########## Default model
+model.ibq.6m.df <-'
+ SUR.6m =~ NA*activity.6m+smile.6m+highp.6m+percept.6m+approach.6m+vocal.6m
+ NEG.6m =~ NA*distress.6m+fear.6m+sadness.6m+falling.6m
+ REG.6m =~ NA*orient.6m+lowp.6m+sooth.6m+cuddle.6m
+ SUR.6m ~~ 1*SUR.6m
+ NEG.6m ~~ 1*NEG.6m
+ REG.6m ~~ 1*REG.6m
+ SUR.6m ~~ NEG.6m 
+ SUR.6m ~~ REG.6m   
+ NEG.6m ~~ REG.6m
+'
+model.ibq.12m.df <-'
+ SUR.12m =~NA*activity.12m+smile.12m+highp.12m+percept.12m+approach.12m+vocal.12m
+ NEG.12m =~NA*distress.12m+fear.12m+sadness.12m+falling.12m
+ REG.12m =~NA*orient.12m+lowp.12m+sooth.12m+cuddle.12m
+ SUR.12m ~~ 1*SUR.12m
+ NEG.12m ~~ 1*NEG.12m
+ REG.12m ~~ 1*REG.12m
+ SUR.12m ~~ NEG.12m 
+ SUR.12m ~~ REG.12m   
+ NEG.12m ~~ REG.12m
+'
+
+########## Garstein model
+model.ibq.6m.md3 <- '
+ SUR.6m =~ NA*activity.6m+smile.6m+approach.6m+percept.6m+vocal.6m+fear.6m+falling.6m
+ NEG.6m =~ NA*distress.6m+fear.6m+sadness.6m+falling.6m+activity.6m+smile.6m+approach.6m+percept.6m+orient.6m
+ REG.6m =~ NA*orient.6m+sooth.6m+lowp.6m
+ SUR.6m ~~ 1*SUR.6m
+ NEG.6m ~~ 1*NEG.6m
+ REG.6m ~~ 1*REG.6m
+ SUR.6m ~~ NEG.6m
+ SUR.6m ~~ REG.6m
+ NEG.6m ~~ REG.6m
+ falling.6m ~~ sooth.6m
+ falling.6m ~~ approach.6m
+'
+model.ibq.12m.md3 <- '
+ SUR.12m =~ NA*activity.12m+smile.12m+approach.12m+percept.12m+vocal.12m+fear.12m+falling.12m
+ NEG.12m =~ NA*distress.12m+fear.12m+sadness.12m+falling.12m+activity.12m+smile.12m+approach.12m+percept.12m+orient.12m
+ REG.12m =~ NA*orient.12m+sooth.12m+lowp.12m
+ SUR.12m ~~ 1*SUR.12m
+ NEG.12m ~~ 1*NEG.12m
+ REG.12m ~~ 1*REG.12m
+ SUR.12m ~~ NEG.12m
+ SUR.12m ~~ REG.12m
+ NEG.12m ~~ REG.12m
+ falling.12m ~~ sooth.12m
+ falling.12m ~~ approach.12m
+'
+
+########## EFA model
+model.ibq.6m.efa <- '
+ SUR.6m =~ NA*smile.6m+vocal.6m+highp.6m+approach.6m+falling.6m
+ NEG.6m =~ NA*distress.6m+fear.6m+sadness.6m+falling.6m
+ REG.6m =~ NA*orient.6m 
+ SUR.6m ~~ 1*SUR.6m
+ NEG.6m ~~ 1*NEG.6m
+ REG.6m ~~ 1*REG.6m
+ SUR.6m ~~ NEG.6m
+ SUR.6m ~~ REG.6m
+ NEG.6m ~~ REG.6m
+ vocal.6m ~~ highp.6m
+ vocal.6m ~~ smile.6m
+ highp.6m ~~ approach.6m
+'
+model.ibq.12m.efa <- '
+ SUR.12m =~ NA*smile.12m+vocal.12m+highp.12m+approach.12m+falling.12m
+ NEG.12m =~ NA*distress.12m+fear.12m+sadness.12m+falling.12m
+ REG.12m =~ NA*orient.12m 
+ SUR.12m ~~ 1*SUR.12m
+ NEG.12m ~~ 1*NEG.12m
+ REG.12m ~~ 1*REG.12m
+ SUR.12m ~~ NEG.12m
+ SUR.12m ~~ REG.12m
+ NEG.12m ~~ REG.12m
+ vocal.12m ~~ highp.12m
+ vocal.12m ~~ smile.12m
+ highp.12m ~~ approach.12m
+'
+```
+
+
+```{r}
+###### Group invariance using 3 models
+require(lavaan)
+fit.df.6m <- group.invariance2 (model.ibq.6m.df,ibq,"risk.status")
+fit.df.12m <- group.invariance2 (model.ibq.12m.df,ibq,"risk.status")
+fit.gt.6m <- group.invariance2 (model.ibq.6m.md3,ibq,"risk.status")
+fit.gt.12m <- group.invariance2 (model.ibq.12m.md3,ibq,"risk.status")
+fit.efa.6m <- group.invariance2 (model.ibq.6m.efa,ibq,"risk.status")
+fit.efa.12m <- group.invariance2 (model.ibq.12m.efa,ibq,"risk.status")
+
+group.invariance.fit <- rbind(fit.df.6m, fit.df.12m, fit.gt.6m, fit.gt.12m, fit.efa.6m, fit.efa.12m)
+```
+
+
+```{r}
+##### revised model 6 months
+group.invariance (model.ibq.6m.efa,ibq,"risk.status")
+```
+
+```{r}
+##### revised model 12 months
+group.invariance (model.ibq.12m.efa,ibq,"risk.status")
+```
+
+
+```{r}
+##### CFA for 24 month outcome variables
+model.24m.out <- '
+ DEV24m =~ NA*COM_STD_SCORE + SOC_STD_SCORE + MS_STD_SCORE + vdq.24m + nvdq.24m
+ DEV24m ~~ 1*DEV24m
+ vdq.24m ~~ nvdq.24m
+ COM_STD_SCORE ~~ 0 * COM_STD_SCORE
+'
+fit.24m.out<- cfa(model.24m.out, data=asd.master,estimator="MLR",missing="ML", fixed.x = FALSE,
+                        group="risk.status",
+                         group.equal=c("loadings"))
+summary (fit.24m.out,fit.measures=TRUE,standardized=TRUE)
+```
+
+
+```{r}
+##### IBQ longitudinal & group configure invariance
+
+lmod1.effect <-'
+ SUR.6m =~ NA*smile.6m +L1*smile.6m + L2*highp.6m + L3*approach.6m + L4*vocal.6m + L17*falling.6m
+ NEG.6m =~ NA*fear.6m + L5*fear.6m + L6*distress.6m + L7*sadness.6m + L8*falling.6m
+ REG.6m =~ 1*orient.6m
+ L1 == 5 - L2 - L3 - L4 - L17
+ L5 == 4 - L6 - L7 - L8
+ SUR.6m ~~ SUR.6m
+ NEG.6m ~~ NEG.6m
+ REG.6m ~~ REG.6m
+ SUR.12m =~ NA*smile.12m + L9*smile.12m + L10*highp.12m + L11*approach.12m + L12*vocal.12m + L18*falling.12m
+ NEG.12m =~ NA*fear.12m + L13*fear.12m + L14*distress.12m + L15*sadness.12m + L16*falling.12m
+ REG.12m =~ 1*orient.12m
+ L9 == 5 - L10 - L11 - L12 - L18
+ L13 == 4 - L14 - L15 - L16
+ SUR.12m ~~ SUR.12m
+ NEG.12m ~~ NEG.12m
+ REG.12m ~~ REG.12m
+ SUR.6m ~~ NEG.6m + REG.6m + SUR.12m + NEG.12m + REG.12m
+ NEG.6m ~~ REG.6m + SUR.12m + NEG.12m + REG.12m
+ REG.6m ~~ SUR.12m + NEG.12m + REG.12m
+ SUR.12m ~~ NEG.12m + REG.12m
+ NEG.12m ~~ REG.12m
+ orient.6m ~~ 0*orient.6m
+ orient.12m ~~ 0*orient.12m
+ smile.6m ~~ smile.12m
+ highp.6m ~~ highp.12m
+ approach.6m ~~ approach.12m
+ vocal.6m ~~ vocal.12m
+ fear.6m ~~ fear.12m
+ distress.6m ~~ distress.12m
+ sadness.6m ~~ sadness.12m
+ falling.6m ~~ falling.12m
+ SUR.6m ~ 1
+ NEG.6m ~ 1
+ REG.6m ~ 1
+ SUR.12m ~ 1
+ NEG.12m ~ 1
+ REG.12m ~ 1
+ smile.6m ~ t1*1
+ highp.6m ~ t2*1
+ approach.6m ~ t3*1
+ vocal.6m ~ t4*1
+ fear.6m ~ t5*1
+ distress.6m ~ t6*1
+ sadness.6m ~ t7*1
+ falling.6m ~ t8*1
+ orient.6m ~ 0*1
+ t1 == 0 - t2 - t3 - t4 - t8
+ t5 == 0 - t6 - t7 - t8
+ smile.12m ~ t9*1
+ highp.12m ~ t10*1
+ approach.12m ~ t11*1
+ vocal.12m ~ t12*1
+ fear.12m ~ t13*1
+ distress.12m ~ t14*1
+ sadness.12m ~ t15*1
+ falling.12m ~ t16*1
+ orient.12m ~ 0*1
+ t9 == 0 - t10 - t11 - t12 - t16
+ t13 == 0 - t14 - t15 - t16
+'
+fit.lmod1.effect <- cfa(lmod1.effect, data=ibq,estimator="MLR",missing="ML", fixed.x = FALSE,
+                        group="risk.status")
+summary (fit.lmod1.effect,fit.measures=TRUE,standardized=TRUE)
+
+```
+
+
+```{r}
+##### IBQ longitudinal & group metric invariance
+lmod1.effect.weak <-'
+ SUR.6m =~ NA*smile.6m +L1*smile.6m + L2*highp.6m + L3*approach.6m + L4*vocal.6m + L17*falling.6m
+ NEG.6m =~ NA*fear.6m + L5*fear.6m + L6*distress.6m + L7*sadness.6m + L8*falling.6m
+ REG.6m =~ 1*orient.6m
+ L1 == 5 - L2 - L3 - L4 - L17
+ L5 == 4 - L6 - L7 - L8
+ SUR.6m ~~ SUR.6m
+ NEG.6m ~~ NEG.6m
+ REG.6m ~~ REG.6m
+ SUR.12m =~ NA*smile.12m + L1*smile.12m + L2*highp.12m + L3*approach.12m + L4*vocal.12m + L17*falling.12m
+ NEG.12m =~ NA*fear.12m + L5*fear.12m + L6*distress.12m + L7*sadness.12m + L8*falling.12m
+ REG.12m =~ 1*orient.12m
+ SUR.12m ~~ SUR.12m
+ NEG.12m ~~ NEG.12m
+ REG.12m ~~ REG.12m
+ SUR.6m ~~ NEG.6m + REG.6m + SUR.12m + NEG.12m + REG.12m
+ NEG.6m ~~ REG.6m + SUR.12m + NEG.12m + REG.12m
+ REG.6m ~~ SUR.12m + NEG.12m + REG.12m
+ SUR.12m ~~ NEG.12m + REG.12m
+ NEG.12m ~~ REG.12m
+ orient.6m ~~ 0*orient.6m
+ orient.12m ~~ 0*orient.12m
+ smile.6m ~~ smile.12m
+ highp.6m ~~ highp.12m
+ approach.6m ~~ approach.12m
+ vocal.6m ~~ vocal.12m
+ fear.6m ~~ fear.12m
+ distress.6m ~~ distress.12m
+ sadness.6m ~~ sadness.12m
+ falling.6m ~~ falling.12m
+ SUR.6m ~ 1
+ NEG.6m ~ 1
+ REG.6m ~ 1
+ SUR.12m ~ 1
+ NEG.12m ~ 1
+ REG.12m ~ 1
+ smile.6m ~ t1*1
+ highp.6m ~ t2*1
+ approach.6m ~ t3*1
+ vocal.6m ~ t4*1
+ fear.6m ~ t5*1
+ distress.6m ~ t6*1
+ sadness.6m ~ t7*1
+ falling.6m ~ t8*1
+ orient.6m ~ 0*1
+ t1 == 0 - t2 - t3 - t4 - t8
+ t5 == 0 - t6 - t7 - t8
+ smile.12m ~ t9*1
+ highp.12m ~ t10*1
+ approach.12m ~ t11*1
+ vocal.12m ~ t12*1
+ fear.12m ~ t13*1
+ distress.12m ~ t14*1
+ sadness.12m ~ t15*1
+ falling.12m ~ t16*1
+ orient.12m ~ 0*1
+ t9 == 0 - t10 - t11 - t12 - t16
+ t13 == 0 - t14 - t15 - t16
+'
+fit.lmod1.effect.weak <- cfa(lmod1.effect.weak, data=ibq,estimator="MLR",missing="ML", fixed.x = FALSE,
+                             group="risk.status",
+                             group.equal=c("loadings"))
+summary (fit.lmod1.effect.weak,fit.measures=TRUE,standardized=TRUE)
+```
+
+
+```{r}
+##### IBQ longitudinal & group scalar invariance
+lmod1.effect.strong <-'
+ SUR.6m =~ NA*smile.6m +L1*smile.6m + L2*highp.6m + L3*approach.6m + L4*vocal.6m + L17*falling.6m
+ NEG.6m =~ NA*fear.6m + L5*fear.6m + L6*distress.6m + L7*sadness.6m + L8*falling.6m
+ REG.6m =~ 1*orient.6m
+ L1 == 5 - L2 - L3 - L4 - L17
+ L5 == 4 - L6 - L7 - L8
+ SUR.6m ~~ SUR.6m
+ NEG.6m ~~ NEG.6m
+ REG.6m ~~ REG.6m
+ SUR.12m =~ NA*smile.12m + L1*smile.12m + L2*highp.12m + L3*approach.12m + L4*vocal.12m + L17*falling.12m
+ NEG.12m =~ NA*fear.12m + L5*fear.12m + L6*distress.12m + L7*sadness.12m + L8*falling.12m
+ REG.12m =~ 1*orient.12m
+ SUR.12m ~~ SUR.12m
+ NEG.12m ~~ NEG.12m
+ REG.12m ~~ REG.12m
+ SUR.6m ~~ NEG.6m + REG.6m + SUR.12m + NEG.12m + REG.12m
+ NEG.6m ~~ REG.6m + SUR.12m + NEG.12m + REG.12m
+ REG.6m ~~ SUR.12m + NEG.12m + REG.12m
+ SUR.12m ~~ NEG.12m + REG.12m
+ NEG.12m ~~ REG.12m
+ orient.6m ~~ 0*orient.6m
+ orient.12m ~~ 0*orient.12m
+ smile.6m ~~ smile.12m
+ highp.6m ~~ highp.12m
+ approach.6m ~~ approach.12m
+ vocal.6m ~~ vocal.12m
+ fear.6m ~~ fear.12m
+ distress.6m ~~ distress.12m
+ sadness.6m ~~ sadness.12m
+ falling.6m ~~ falling.12m
+ SUR.6m ~ 1
+ NEG.6m ~ 1
+ REG.6m ~ 1
+ SUR.12m ~ 1
+ NEG.12m ~ 1
+ REG.12m ~ 1
+ smile.6m ~ t1*1
+ highp.6m ~ t2*1
+ approach.6m ~ t3*1
+ vocal.6m ~ t4*1
+ fear.6m ~ t5*1
+ distress.6m ~ t6*1
+ sadness.6m ~ t7*1
+ falling.6m ~ t8*1
+ orient.6m ~ 0*1
+ t1 == 0 - t2 - t3 - t4 - t8
+ t5 == 0 - t6 - t7 - t8
+ smile.12m ~ t1*1
+ highp.12m ~ t2*1
+ approach.12m ~ t3*1
+ vocal.12m ~ t4*1
+ fear.12m ~ t5*1
+ distress.12m ~ t6*1
+ sadness.12m ~ t7*1
+ falling.12m ~ t8*1
+ orient.12m ~ 0*1
+'
+fit.lmod1.effect.strong <- cfa(lmod1.effect.strong, data=ibq,estimator="MLR",missing="ML", fixed.x = FALSE,
+                             group="risk.status",
+                             group.equal=c("loadings","intercepts"))
+summary (fit.lmod1.effect.strong,fit.measures=TRUE,standardized=TRUE)
+```
+```{r}
+modindices(fit.lmod1.effect.strong)
+```
+
+
+```{r}
+##### Longitudinal model inclduing regression path from 6 months ibq
+model.sem1 <- '
+ SUR.6m =~ NA*smile.6m + L1*smile.6m + L2*highp.6m + L3*approach.6m + L4*vocal.6m + L5*falling.6m
+ NEG.6m =~ NA*fear.6m + L6*fear.6m + L7*distress.6m + L8*sadness.6m + L9*falling.6m
+ SUR.6m ~~ 1*SUR.6m
+ NEG.6m ~~ 1*NEG.6m
+ SUR.6m ~~ ELC.6m + NEG.6m + orient.6m
+ NEG.6m ~~ ELC.6m + orient.6m 
+ orient.6m ~~ ELC.6m
+ SUR.6m ~ Gender
+ NEG.6m ~ Gender
+ orient.6m ~ Gender
+ ELC.6m ~ Gender
+ SUR.12m =~ NA*smile.12m + L1*smile.12m + L2*highp.12m + L3*approach.12m + L4*vocal.12m + L5*falling.12m
+ NEG.12m =~ NA*fear.12m + L6*fear.12m + L7*distress.12m + L8*sadness.12m + L9*falling.12m
+ SUR.12m ~~ SUR.12m
+ NEG.12m ~~ NEG.12m
+ SUR.12m ~~ ELC.12m + NEG.12m + orient.12m
+ NEG.12m ~~ ELC.12m + orient.12m 
+ orient.12m ~~ ELC.12m
+ SUR.12m ~ Gender + ELC.6m + SUR.6m + NEG.6m + orient.6m
+ NEG.12m ~ Gender + ELC.6m + SUR.6m + NEG.6m + orient.6m
+ orient.12m ~ Gender + ELC.6m + SUR.6m + NEG.6m + orient.6m
+ ELC.12m ~ Gender + ELC.6m + SUR.6m + NEG.6m + orient.6m
+ smile.6m ~~ smile.12m
+ highp.6m ~~ highp.12m
+ approach.6m ~~ approach.12m
+ vocal.6m ~~ vocal.12m
+ fear.6m ~~ fear.12m
+ distress.6m ~~ distress.12m
+ sadness.6m ~~ sadness.12m
+ falling.6m ~~ falling.12m
+ DEV.24m =~ NA*COM_STD_SCORE + L10*COM_STD_SCORE + L11*SOC_STD_SCORE + L12*MS_STD_SCORE + L13*vdq.24m + L14*nvdq.24m
+ DEV.24m ~~ 1*DEV.24m
+ COM_STD_SCORE ~~ 0*COM_STD_SCORE
+ vdq.24m ~~ nvdq.24m
+ DEV.24m ~ Gender + ELC.6m + SUR.6m + NEG.6m + orient.6m + ELC.12m + SUR.12m + NEG.12m + orient.12m
+'
+fit.sem1.weak <- sem(model.sem1, data=asd.master, estimator="MLR",missing="ML", fixed.x = FALSE,
+                               group="risk.status",
+                               group.equal=c("loadings"))
+summary (fit.sem1.weak,fit.measures=TRUE,standardized=TRUE)
+```
+
+
+```{r}
+##### Longitudinal trimmed model
+model.sem2 <- '
+ SUR.6m =~ NA*smile.6m + L1*smile.6m + L2*highp.6m + L3*approach.6m + L4*vocal.6m + L5*falling.6m
+ NEG.6m =~ NA*fear.6m + L6*fear.6m + L7*distress.6m + L8*sadness.6m + L9*falling.6m
+ SUR.6m ~~ 1*SUR.6m
+ NEG.6m ~~ 1*NEG.6m
+ SUR.6m ~~ ELC.6m + NEG.6m + orient.6m
+ NEG.6m ~~ ELC.6m + orient.6m 
+ orient.6m ~~ ELC.6m
+ SUR.6m ~ Gender
+ NEG.6m ~ Gender
+ orient.6m ~ Gender
+ ELC.6m ~ Gender
+ SUR.12m =~ NA*smile.12m + L1*smile.12m + L2*highp.12m + L3*approach.12m + L4*vocal.12m + L5*falling.12m
+ NEG.12m =~ NA*fear.12m + L6*fear.12m + L7*distress.12m + L8*sadness.12m + L9*falling.12m
+ SUR.12m ~~ SUR.12m
+ NEG.12m ~~ NEG.12m
+ SUR.12m ~~ ELC.12m + NEG.12m + orient.12m
+ NEG.12m ~~ ELC.12m + orient.12m 
+ orient.12m ~~ ELC.12m
+ SUR.12m ~ Gender + ELC.6m + SUR.6m + NEG.6m + orient.6m
+ NEG.12m ~ Gender + ELC.6m + SUR.6m + NEG.6m + orient.6m
+ orient.12m ~ Gender + ELC.6m + SUR.6m + NEG.6m + orient.6m
+ ELC.12m ~ Gender + ELC.6m + SUR.6m + NEG.6m + orient.6m
+ smile.6m ~~ smile.12m
+ highp.6m ~~ highp.12m
+ approach.6m ~~ approach.12m
+ vocal.6m ~~ vocal.12m
+ fear.6m ~~ fear.12m
+ distress.6m ~~ distress.12m
+ sadness.6m ~~ sadness.12m
+ falling.6m ~~ falling.12m
+ DEV.24m =~ NA*COM_STD_SCORE + L10*COM_STD_SCORE + L11*SOC_STD_SCORE + L12*MS_STD_SCORE + L13*vdq.24m + L14*nvdq.24m
+ DEV.24m ~~ 1*DEV.24m
+ COM_STD_SCORE ~~ 0*COM_STD_SCORE
+ vdq.24m ~~ nvdq.24m
+ DEV.24m ~ Gender + ELC.12m + SUR.12m + NEG.12m + orient.12m
+'
+fit.sem2.weak <- sem(model.sem2, data=asd.master, estimator="MLR",missing="ML", fixed.x = FALSE,
+                               group="risk.status",
+                               group.equal=c("loadings"))
+summary (fit.sem2.weak,fit.measures=TRUE,standardized=TRUE)
+
+```
+
+
+```{r}
+###### Testing indirect effect
+model.sem2.ind <- '
+ SUR.6m =~ NA*smile.6m + L1*smile.6m + L2*highp.6m + L3*approach.6m + L4*vocal.6m + L5*falling.6m
+ NEG.6m =~ NA*fear.6m + L6*fear.6m + L7*distress.6m + L8*sadness.6m + L9*falling.6m
+ SUR.6m ~~ 1*SUR.6m
+ NEG.6m ~~ 1*NEG.6m
+ SUR.6m ~~ ELC.6m + NEG.6m + orient.6m
+ NEG.6m ~~ ELC.6m + orient.6m 
+ orient.6m ~~ ELC.6m
+ SUR.6m ~ Gender
+ NEG.6m ~ Gender
+ orient.6m ~ Gender
+ ELC.6m ~ Gender
+ SUR.12m =~ NA*smile.12m + L1*smile.12m + L2*highp.12m + L3*approach.12m + L4*vocal.12m + L5*falling.12m
+ NEG.12m =~ NA*fear.12m + L6*fear.12m + L7*distress.12m + L8*sadness.12m + L9*falling.12m
+ SUR.12m ~~ SUR.12m
+ NEG.12m ~~ NEG.12m
+ SUR.12m ~~ ELC.12m + NEG.12m + orient.12m
+ NEG.12m ~~ ELC.12m + orient.12m 
+ orient.12m ~~ ELC.12m
+ SUR.12m ~ Gender + ELC.6m + SUR.6m + NEG.6m + orient.6m
+ NEG.12m ~ Gender + ELC.6m + SUR.6m + NEG.6m + orient.6m
+ orient.12m ~ Gender + ELC.6m + SUR.6m + a*NEG.6m + orient.6m
+ ELC.12m ~ Gender + ELC.6m + SUR.6m + NEG.6m + orient.6m
+ smile.6m ~~ smile.12m
+ highp.6m ~~ highp.12m
+ approach.6m ~~ approach.12m
+ vocal.6m ~~ vocal.12m
+ fear.6m ~~ fear.12m
+ distress.6m ~~ distress.12m
+ sadness.6m ~~ sadness.12m
+ falling.6m ~~ falling.12m
+ DEV.24m =~ NA*COM_STD_SCORE + L10*COM_STD_SCORE + L11*SOC_STD_SCORE + L12*MS_STD_SCORE + L13*vdq.24m + L14*nvdq.24m
+ DEV.24m ~~ 1*DEV.24m
+ COM_STD_SCORE ~~ 0*COM_STD_SCORE
+ vdq.24m ~~ nvdq.24m
+ DEV.24m ~ Gender + ELC.12m + SUR.12m + NEG.12m + b*orient.12m
+ ab := a*b
+'
+fit.sem2.weak.ind <- sem(model.sem2.ind, data=asd.master[asd.master$risk.status=="HR",], estimator="MLR",missing="ML", fixed.x = FALSE,se="bootstrp")
+summary (fit.sem2.weak.ind,fit.measures=TRUE,standardized=TRUE)
+```
+
+```{r}
+##### Longitudinal model excluding HR+ and LR+ (+no diagnostic participants)
+fit.sem2.weak.nHRp <- sem(model.sem2, data=asd.reduced, estimator="MLR",missing="ML", fixed.x = FALSE,
+                               group="risk.status",
+                               group.equal=c("loadings"))
+summary (fit.sem2.weak.nHRp,fit.measures=TRUE,standardized=TRUE)
+```
+
+
+```{r}
+
+asd.reduced$dxd1 <- ifelse((asd.reduced$dgn=="HR-"),1,0)
+asd.reduced$dxd2 <- ifelse((asd.reduced$dgn=="LR-"),1,0)
+
+lmod1.effect.weak.mimic <-'
+ SUR.6m =~ NA*smile.6m +L1*smile.6m + L2*highp.6m + L3*approach.6m + L4*vocal.6m + L17*falling.6m
+ NEG.6m =~ NA*fear.6m + L5*fear.6m + L6*distress.6m + L7*sadness.6m + L8*falling.6m
+ REG.6m =~ 1*orient.6m
+ L1 == 5 - L2 - L3 - L4 - L17
+ L5 == 4 - L6 - L7 - L8
+ SUR.6m ~~ SUR.6m
+ NEG.6m ~~ NEG.6m
+ REG.6m ~~ REG.6m
+ SUR.12m =~ NA*smile.12m + L1*smile.12m + L2*highp.12m + L3*approach.12m + L4*vocal.12m + L17*falling.12m
+ NEG.12m =~ NA*fear.12m + L5*fear.12m + L6*distress.12m + L7*sadness.12m + L8*falling.12m
+ REG.12m =~ 1*orient.12m
+ SUR.12m ~~ SUR.12m
+ NEG.12m ~~ NEG.12m
+ REG.12m ~~ REG.12m
+ SUR.6m ~~ NEG.6m + REG.6m + SUR.12m + NEG.12m + REG.12m
+ NEG.6m ~~ REG.6m + SUR.12m + NEG.12m + REG.12m
+ REG.6m ~~ SUR.12m + NEG.12m + REG.12m
+ SUR.12m ~~ NEG.12m + REG.12m
+ NEG.12m ~~ REG.12m
+ orient.6m ~~ 0*orient.6m
+ orient.12m ~~ 0*orient.12m
+ smile.6m ~~ smile.12m
+ highp.6m ~~ highp.12m
+ approach.6m ~~ approach.12m
+ vocal.6m ~~ vocal.12m
+ fear.6m ~~ fear.12m
+ distress.6m ~~ distress.12m
+ sadness.6m ~~ sadness.12m
+ falling.6m ~~ falling.12m
+ SUR.6m ~ 1
+ NEG.6m ~ 1
+ REG.6m ~ 1
+ SUR.12m ~ 1
+ NEG.12m ~ 1
+ REG.12m ~ 1
+ smile.6m ~ t1*1
+ highp.6m ~ t2*1
+ approach.6m ~ t3*1
+ vocal.6m ~ t4*1
+ fear.6m ~ t5*1
+ distress.6m ~ t6*1
+ sadness.6m ~ t7*1
+ falling.6m ~ t8*1
+ orient.6m ~ 0*1
+ t1 == 0 - t2 - t3 - t4 - t8
+ t5 == 0 - t6 - t7 - t8
+ smile.12m ~ t9*1
+ highp.12m ~ t10*1
+ approach.12m ~ t11*1
+ vocal.12m ~ t12*1
+ fear.12m ~ t13*1
+ distress.12m ~ t14*1
+ sadness.12m ~ t15*1
+ falling.12m ~ t16*1
+ orient.12m ~ 0*1
+ t9 == 0 - t10 - t11 - t12 - t16
+ t13 == 0 - t14 - t15 - t16
+ SUR.6m + NEG.6m + REG.6m + SUR.12m + NEG.12m + REG.12m ~ dxd1 + dxd2
+'
+
+fit.lmod1.effect.weak.mimic <- sem(lmod1.effect.weak.mimic, data=asd.reduced, estimator="MLR",missing="ML", fixed.x = FALSE)
+summary (fit.lmod1.effect.weak.mimic,fit.measures=TRUE,standardized=TRUE)
+```
+
+
+```{r}
+###### Estimated factor means from metric invariant (for age) model
+ibq.reduced <- ibq[!is.na(ibq$dgn)&ibq$dgn !="LR+",]
+with(ibq.reduced, table(dgn))
+fit.lmod1.effect.weak.3g <- cfa(lmod1.effect.weak, data=ibq.reduced,estimator="MLR",missing="ML", fixed.x = FALSE,
+                               group="dgn",
+                               group.equal=c("loadings","intercepts"))
+summary (fit.lmod1.effect.weak.3g,fit.measures=TRUE,standardized=TRUE)
+fscore.lav.weak <- lavPredict(fit.lmod1.effect.weak.3g, type="lv",assemble=TRUE)
+fscore.weak.des <- describeBy (fscore.lav.weak, fscore.lav.weak$dgn, mat=T, digits=2)
+fscore.weak.des <- fscore.weak.des[-c(19:21),2:6]
+
+fscore.weak.des$group1 <- as.factor(fscore.weak.des$group1)
+fscore.weak.des$vars <- as.factor(fscore.weak.des$vars)
+fscore.weak.des$group1 <- factor(fscore.weak.des$group1, levels=c("LR-","HR-","HR+"))
+```
+
+
+```{r}
+######### Estimate factor means from scalar invariant model
+fit.lmod1.effect.strong.3g <- cfa(lmod1.effect.strong, data=ibq.reduced,estimator="MLR",missing="ML", fixed.x = FALSE,
+                               group="dgn",
+                               group.equal=c("loadings","intercepts"))
+summary (fit.lmod1.effect.strong.3g,fit.measures=TRUE,standardized=TRUE)
+fscore.lav.strong <- lavPredict(fit.lmod1.effect.strong.3g, type="lv",assemble=TRUE)
+fscore.strong.des <- describeBy (fscore.lav.strong, fscore.lav.strong$dgn, mat=T, digits=2)
+fscore.strong.des <- fscore.strong.des[-c(19:21),2:6]
+
+```
+
+```{r}
+require(ggplot2)
+library(ggsignif)
+
+p <- ggplot (fscore.weak.des, aes (x=vars, y=mean, fill=group1)) +
+  geom_bar(stat="identity", color="black",
+           position=position_dodge()) +
+  geom_errorbar(aes(ymin=mean,ymax=mean+sd), width=.2,
+                position=position_dodge(.9)) +
+  geom_signif (annotation="***",
+               y_position=7.0 , xmin=0.7,xmax=1.3, tip_length=0.01)+
+  geom_signif (annotation="**",
+               y_position=6.6, xmin=0.7,xmax=1.0, tip_length=0.01)+
+  geom_signif (annotation="***",
+               y_position=6.6, xmin=1.02,xmax=1.3, tip_length=0.01)+
+  geom_signif (annotation="***",
+               y_position=7.4 , xmin=3.7,xmax=4.3, tip_length=0.01)+
+  geom_signif (annotation="**",
+               y_position=7.0, xmin=3.7,xmax=4.0, tip_length=0.01)+
+  geom_signif (annotation="***",
+               y_position=7.0, xmin=4.02,xmax=4.3, tip_length=0.01)+
+  geom_signif (annotation="*",
+               y_position=3.6 , xmin=1.7,xmax=2.0, tip_length=0.01)+
+  geom_signif (annotation="*",
+               y_position=4.0 , xmin=1.7,xmax=2.3, tip_length=0.01)+
+  geom_signif (annotation="**",
+               y_position=4.0 , xmin=4.7,xmax=5.3, tip_length=0.01)+
+  scale_y_continuous (breaks = seq (0,7, by = 1.0),
+                      labels = seq (0,7,1.0),
+                      expand = c(0,0)) +
+  scale_fill_grey (start = 1, end =.5,
+                   labels=c("LR-","HR-","HR+")) +
+  guides (fill=guide_legend(title=NULL)) +
+  scale_x_discrete(labels = c("Positive\nEmotionality","Negative\nEmotionality","Duration of\nOrienting",
+                              "Positive\nEmotionality","Negative\nEmotionality","Duration of\nOrienting"  )) +
+  labs (x="      IBQ Factor 6 months                  IBQ Factor 12 months ",
+        y = "Factor Score")
+
+p+expand_limits(y=c(0,8.0))+theme(panel.grid.major.y=element_line(size=.1,color="black")) + theme_bw()
+
+
+ggsave("ibq_factorscores_by_group.png")
+```
+
+```{r}
+p <- ggplot (fscore.weak.des[c(1:9),], aes (x=vars, y=mean, fill=group1)) +
+  geom_bar(stat="identity", color="black",
+           position=position_dodge()) +
+  geom_errorbar(aes(ymin=mean,ymax=mean+sd), width=.2,
+                position=position_dodge(.9)) +
+  geom_signif (annotation="***",
+               y_position=7.0 , xmin=0.7,xmax=1.3, tip_length=0.01)+
+  geom_signif (annotation="**",
+               y_position=6.6, xmin=0.7,xmax=1.0, tip_length=0.01)+
+  geom_signif (annotation="***",
+               y_position=6.6, xmin=1.02,xmax=1.3, tip_length=0.01)+
+  geom_signif (annotation="*",
+               y_position=3.6 , xmin=1.7,xmax=2.0, tip_length=0.01)+
+  geom_signif (annotation="*",
+               y_position=4.0 , xmin=1.7,xmax=2.3, tip_length=0.01)+
+  scale_y_continuous (breaks = seq (0,7, by = 1.0),
+                      labels = seq (0,7,1.0),
+                      expand = c(0,0)) +
+  scale_fill_grey (start = 1, end =.5,
+                   labels=c("LR-","HR-","HR+")) +
+  guides (fill=guide_legend(title=NULL)) +
+  scale_x_discrete(labels = c("Positive\nEmotionality","Negative\nEmotionality","Duration of\nOrienting")) +
+  labs (x="      IBQ Factor 6 months",
+        y = "Factor Score") +
+  expand_limits(y=c(0,8.0))+
+  theme_bw() +
+  theme(panel.grid.major.y=element_line(size=.1,color="black"),
+        panel.grid.minor.y=element_blank(),
+        panel.grid.major.x=element_blank(),
+        panel.grid.minor.x=element_blank())
+
+
+q <- ggplot (fscore.weak.des[c(10:18),], aes (x=vars, y=mean, fill=group1)) +
+  geom_bar(stat="identity", color="black",
+           position=position_dodge()) +
+  geom_errorbar(aes(ymin=mean,ymax=mean+sd), width=.2,
+                position=position_dodge(.9)) +
+  geom_signif (annotation="***",
+               y_position=7.4 , xmin=0.7,xmax=1.3, tip_length=0.01)+
+  geom_signif (annotation="**",
+               y_position=7.0, xmin=0.7,xmax=1.0, tip_length=0.01)+
+  geom_signif (annotation="***",
+               y_position=7.0, xmin=1.02,xmax=1.3, tip_length=0.01)+
+  geom_signif (annotation="**",
+               y_position=4.0 , xmin=1.7,xmax=2.3, tip_length=0.01)+
+  scale_y_continuous (breaks = seq (0,7, by = 1.0),
+                      labels = seq (0,7,1.0),
+                      expand = c(0,0)) +
+  scale_fill_grey (start = 1, end =.5,
+                   labels=c("LR-","HR-","HR+")) +
+  guides (fill=guide_legend(title=NULL)) +
+  scale_x_discrete(labels = c("Positive\nEmotionality","Negative\nEmotionality","Duration of\nOrienting")) +
+  labs (x="      IBQ Factor 12 months",
+        y="")+
+  expand_limits(y=c(0,8.0))+
+  theme_bw() +
+  theme(panel.grid.major.y=element_line(size=.1,color="black"),
+        panel.grid.minor.y=element_blank(),
+        panel.grid.major.x=element_blank(),
+        panel.grid.minor.x=element_blank())
+
+
+
+
+
+library(ggpubr)
+ggarrange(p,q,
+          ncol=2, nrow=1,
+          common.legend=T,legend="bottom" )
+
+ggsave("ibq_factorscores_by_group_sep.pdf") 
+```
+
+```{r}
+library(heplots)
+library(MBESS)
+manova.fscore <- manova(as.matrix(fscore.lav.weak[,1:6]) ~ dgn, data= fscore.lav.weak)
+summary(manova.fscore, tol=0)
+summary.aov(manova.fscore)
+aov.fscore <- as.list(summary.aov(manova.fscore))
+etasq(manova.fscore)
+get.ci.partial.eta.squared (5.66, df1=2, df2=504,conf.level=.90)
+```
+```{r}
+p.fscore <- as.data.frame(sapply(aov.fscore,"[[","Pr(>F)"))
+p.fscore <- p.fscore[-2,]
+p.adj.fscore <- as.data.frame(p.adjust(p.fscore, method="BH", n=length(p.fscore)))
+p.adj.fscore <- round(p.adj.fscore,3)
+F.values.fscore <- as.data.frame(sapply(aov.fscore,"[[","F value"))
+F.values.fscore <- F.values.fscore[-2,]
+df.fscore <- as.data.frame(sapply(aov.fscore,"[[","Df"))
+F.df.fscore <- rbind(F.values.fscore, df.fscore)
+ci.eta.fscore <- ci.eta(F.df.fscore)
+```
+
+
+```{r}
+
+aov.sur6m <- aov(SUR.6m ~ dgn,data=fscore.lav.weak)
+summary(aov.sur6m)
+TukeyHSD(aov.sur6m)
+with(fscore.weak, pairwise.t.test(SUR.6m,dgn,p.adj="BH", paired=F))
+
+aov.sur12m <- aov(SUR.12m ~ dgn,data=fscore.lav.weak)
+summary(aov.sur12m)
+TukeyHSD(aov.sur12m)
+with(fscore.weak, pairwise.t.test(SUR.12m,dgn,p.adj="BH", paired=F))
+
+aov.neg6m <- aov(NEG.6m ~ dgn,data=fscore.lav.weak)
+summary(aov.neg6m)
+TukeyHSD(aov.neg6m)
+with(fscore.weak, pairwise.t.test(NEG.6m,dgn,p.adj="BH", paired=F))
+
+aov.neg12m <- aov(NEG.12m ~ dgn,data=fscore.lav.weak)
+summary(aov.neg12m)
+TukeyHSD(aov.neg12m)
+with(fscore.weak, pairwise.t.test(NEG.12m,dgn,p.adj="BH", paired=F))
+
+aov.reg6m <- aov(REG.6m ~ dgn,data=fscore.lav.weak)
+summary(aov.reg6m)
+TukeyHSD(aov.reg6m)
+with(fscore.weak, pairwise.t.test(REG.6m,dgn,p.adj="BH", paired=F))
+
+aov.reg12m <- aov(REG.12m ~ dgn,data=fscore.lav.weak)
+summary(aov.reg12m)
+TukeyHSD(aov.reg12m)
+with(fscore.weak, pairwise.t.test(REG.12m,dgn,p.adj="BH", paired=F))
+```
+
+
